@@ -1,0 +1,10 @@
+/.vs
+/**/*.user
+/**/*.suo
+/**/bin
+/**/obj
+/**/*.Cache
+/_NCrunch_*
+/_ReSharper.Caches
+/logs
+

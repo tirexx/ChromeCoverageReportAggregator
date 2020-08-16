@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Aggregator.Hosts.Console": {
+      "commandName": "Project",
+      "commandLineArgs": "aggregate -i \"D:\\temp\\flores_coverage\" -o \"D:\\temp\\flores_coverage_output\""
+    }
+  }
+}
