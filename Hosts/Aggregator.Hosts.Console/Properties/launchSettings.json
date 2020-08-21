@@ -2,7 +2,7 @@
   "profiles": {
     "Aggregator.Hosts.Console": {
       "commandName": "Project",
-      "commandLineArgs": "aggregate -i \"D:\\temp\\flores_coverage\" -o \"D:\\temp\\flores_coverage_output\""
+      "commandLineArgs": "aggregate -i \"D:\\temp\\flores_coverage_all\" -o \"D:\\temp\\flores_coverage_output_all\""
     }
   }
 }

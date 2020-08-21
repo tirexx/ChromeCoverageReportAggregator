@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -9,6 +8,7 @@ using Aggregator.Contracts;
 using Base.Crypto;
 using Base.Io;
 using Base.Logging;
+using Base.Long;
 using Base.Strings;
 using Base.Tasks;
 using Range = Aggregator.Contracts.Range;
@@ -17,6 +17,7 @@ namespace Aggregator.Domain
 {
     public class Aggregator
     {
+        private readonly CoverageRangeSetsAggregator _coverageRangeSetsAggregator;
         private readonly CoverageReportsSerializer _coverageReportsSerializer;
         private readonly IFileSystem _fileSystem;
         private readonly ILogger _logger;
@@ -26,6 +27,7 @@ namespace Aggregator.Domain
             _fileSystem = fileSystem;
             _logger = logger;
             _coverageReportsSerializer = new CoverageReportsSerializer();
+            _coverageRangeSetsAggregator = new CoverageRangeSetsAggregator();
         }
 
         public async Task Aggregate(string inputFolder, string fileMask, string outputFolder,
@@ -52,46 +54,47 @@ namespace Aggregator.Domain
                 .Select(x => GetAggregatedCoverage(x.First().Url, x.ToArray())).ToArray();
 
             // Write covered
-            await WriteCoveredFiles(outputFolder, aggregatedPageResourceCoverageReports, pageResourceCoverageReport,
+            var statistic = await WriteCoveredFiles(outputFolder, aggregatedPageResourceCoverageReports, pageResourceCoverageReport,
                 cancellationToken).ConfigureAwait(false);
+
+            // report statistic
+            await ReportAggregatedCoverage(statistic, outputFolder, cancellationToken);
         }
 
-        private ResourceCoverageReport GetAggregatedCoverage(Uri url, PageResourceCoverageReport[] reports)
+        public ResourceCoverageReport GetAggregatedCoverage(Uri url, PageResourceCoverageReport[] reports)
         {
-            var ranges = reports.SelectMany(x => x.Ranges).OrderBy(x => x.Start).ToArray();
+            var ranges = reports.SelectMany(x => x.Ranges).ToArray();
 
             if (!ranges.Any()) return new ResourceCoverageReport(url, new Range[] { });
 
-            var stack = new Stack<Range>();
-            stack.Push(ranges[0]);
+            var aggregatdeRanges = _coverageRangeSetsAggregator.AggregateRanges(ranges);
 
-            for (var i = 1; i < ranges.Length; i++)
-            {
-                var top = stack.Peek();
-
-                // not overlap
-                if (top.End < ranges[i].Start) stack.Push(ranges[i]);
-
-                // overlap and end is further
-                if (top.End < ranges[i].End) top.End = ranges[i].End;
-            }
             _logger.Info($"Coverage for {url.AbsoluteUri} is aggregated from {reports.Length} reports");
-            return new ResourceCoverageReport(url, stack.OrderBy(x => x.Start).ToArray());
+            return new ResourceCoverageReport(url, aggregatdeRanges);
         }
 
-        private string GetCoveredResourceContent(string resourceContent, Range[] ranges)
+        private (string, CoverageStats) GetCoveredResourceContentAndCalculateStats(Uri url, string resourceContent, Range[] ranges)
         {
-            var sb = new StringBuilder();
-            foreach (var range in ranges)
+            try
             {
-                var end = range.End;
-                if (end >= resourceContent.Length) end = resourceContent.Length - 1;
+                var sb = new StringBuilder();
+                long coveredChars = 0;
+                foreach (var range in ranges)
+                {
+                    sb.AppendLine(resourceContent.Substring(Convert.ToInt32(range.Start),
+                        Convert.ToInt32(range.End - range.Start)));
 
-                sb.AppendLine(resourceContent.Substring(Convert.ToInt32(range.Start),
-                    Convert.ToInt32(end - range.Start + 1)));
+                    coveredChars += range.End - range.Start;
+                }
+
+                return (sb.ToString(), new CoverageStats(resourceContent.Length, coveredChars, url));
             }
-
-            return sb.ToString();
+            catch (Exception ex)
+            {
+                _logger.Error(
+                    $"Error when getting covered content of {url.AbsoluteUri}. Error: {(string.IsNullOrEmpty(resourceContent) ? "Content is empty in coverage report, but has nonzero ranges" : ex.ToString())}");
+                return (string.Empty, new CoverageStats(resourceContent.Length, 0, url));
+            }
         }
 
         private IGrouping<Uri, PageResourceCoverageReport>[] GetResourcesWithDifferentContent(
@@ -110,8 +113,9 @@ namespace Aggregator.Domain
                 _logger.Info("No files to process");
                 return Enumerable.Empty<PageResourceCoverageReport>().ToArray();
             }
+
             _logger.Info($"{files.Length} coverage files found");
-            
+
             var tasks = files.Select(fileName => Task.Run(async () =>
             {
                 _logger.Info($"Reading file {fileName}");
@@ -137,6 +141,19 @@ namespace Aggregator.Domain
                 .ToArray();
         }
 
+        private async Task ReportAggregatedCoverage(CoverageStats[] statistic, string outputFolder, CancellationToken cancellationToken = default)
+        {
+            var header = new[] {"|   %   | Not covered|    Covered   |   Length   | Url"};
+            var lines = header.Concat(statistic.OrderByDescending(x => x.Length - x.Covered).Select(x =>
+                    $"| {x.Coverage.ToString("##.##").PadRight(5)} | {(x.Length - x.Covered).WithSizeSuffix().PadLeft(10)} | {x.Covered.WithSizeSuffix().PadLeft(12)} | {x.Length.WithSizeSuffix().PadLeft(10)} | {(x.Url.AbsoluteUri.Length > 260 ? x.Url.AbsoluteUri.Substring(0, 260) + "..." : x.Url.AbsoluteUri)}"))
+                .AggregateLinesToString();
+
+            _logger.Info(lines);
+
+            await _fileSystem.WriteTextToFileAsync(Path.Combine(outputFolder, "stats.txt"), lines, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         private void ShowValidationErrorsForResourcesWithDifferentContent(
             IGrouping<Uri, PageResourceCoverageReport>[] resourcesWithDifferentContent)
         {
@@ -154,7 +171,7 @@ namespace Aggregator.Domain
             }
         }
 
-        private async Task WriteCoveredFiles(string outputFolder,
+        private async Task<CoverageStats[]> WriteCoveredFiles(string outputFolder,
             ResourceCoverageReport[] aggregatedPageResourceCoverageReports,
             PageResourceCoverageReport[] pageResourceCoverageReport, CancellationToken cancellationToken = default)
         {
@@ -168,31 +185,34 @@ namespace Aggregator.Domain
                         await _fileSystem.ReadTextFileAsync(x.File, cancellationToken).ConfigureAwait(false);
                     var coverageReports = _coverageReportsSerializer.CoverageReportFromJson(fileContent);
                     var resourceContent = coverageReports.First(y => y.Url == x.AggregatedCoverageReport.Url).Text;
-                    var coveredResourceContent =
-                        GetCoveredResourceContent(resourceContent, x.AggregatedCoverageReport.Ranges);
+                    var (coveredResourceContent, stats) =
+                        GetCoveredResourceContentAndCalculateStats(x.AggregatedCoverageReport.Url, resourceContent,
+                            x.AggregatedCoverageReport.Ranges);
 
                     var url = x.AggregatedCoverageReport.Url.AbsoluteUri.Replace(
                         x.AggregatedCoverageReport.Url.Scheme + "://", "");
-                    var fullPath = Path.Combine(outputFolder, url.Replace('/', Path.DirectorySeparatorChar));
+                    var fullPath = Path.Combine(outputFolder,
+                        url.Replace('/', Path.DirectorySeparatorChar).Replace(':', '_').ReplaceInvalidPathChars("_"));
                     if (fullPath.EndsWith(Path.DirectorySeparatorChar))
                     {
                         fullPath += "_";
                     }
 
                     var info = new FileInfo(fullPath);
-                    var outputFileName = Path.Combine(info.Directory.FullName.ReplaceInvalidPathChars("_"),
-                        info.Name.ReplaceInvalidFileNameChars("_"));
+                    var outputFileName = Path.Combine(info.Directory.FullName, info.Name.ReplaceInvalidFileNameChars("_"));
                     if (outputFileName.Length > 260)
                     {
                         outputFileName = outputFileName.Substring(0, 260);
                     }
-                    
+
                     await _fileSystem.WriteTextToFileAsync(outputFileName, coveredResourceContent, cancellationToken)
                         .ConfigureAwait(false);
                     _logger.Info($"Covered part of resource {x.AggregatedCoverageReport.Url.AbsoluteUri} is written to file {outputFileName}");
+                    return stats;
                 })).ToArray();
 
-            await tasks.WhenAllTasks(_logger, cancellationToken).ConfigureAwait(false);
+            var statistic = await tasks.WhenAllTasks(_logger, cancellationToken).ConfigureAwait(false);
+            return statistic;
         }
     }
 }
