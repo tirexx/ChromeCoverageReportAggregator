@@ -90,6 +90,16 @@ namespace Base.Strings
             return s;
         }
 
+        public static string GetAfterLast(this string s, char marker)
+        {
+            int lastIndexOfMarker = s.LastIndexOf(marker);
+
+            if (!string.IsNullOrEmpty(s) && s.Length > 0 && lastIndexOfMarker > -1)
+                return s.Substring(lastIndexOfMarker + 1, s.Length - lastIndexOfMarker - 1);
+
+            return s;
+        }
+
         public static string ReplaceInvalidFileNameChars(this string filename, string replaceOn)
         {
             return string.Join(replaceOn, filename.Split(Path.GetInvalidFileNameChars()));

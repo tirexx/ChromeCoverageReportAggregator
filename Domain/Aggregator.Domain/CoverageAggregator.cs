@@ -41,7 +41,7 @@ namespace Aggregator.Domain
             var resourcesWithDifferentContent = GetResourcesWithDifferentContent(pageResourceCoverageReport);
             if (resourcesWithDifferentContent.Any())
             {
-                ShowValidationErrorsForResourcesWithDifferentContent(resourcesWithDifferentContent);
+                await ReportValidationErrorsForResourcesWithDifferentContent(resourcesWithDifferentContent, outputFolder, cancellationToken).ConfigureAwait(false);
 
                 pageResourceCoverageReport =
                     pageResourceCoverageReport.Except(resourcesWithDifferentContent.SelectMany(x => x.ToArray()))
@@ -58,7 +58,7 @@ namespace Aggregator.Domain
                 cancellationToken).ConfigureAwait(false);
 
             // report statistic
-            await ReportAggregatedCoverage(statistic, outputFolder, cancellationToken);
+            await ReportAggregatedCoverage(statistic, outputFolder, cancellationToken).ConfigureAwait(false);
         }
 
         public ResourceCoverageReport GetAggregatedCoverage(Uri url, PageResourceCoverageReport[] reports)
@@ -126,7 +126,7 @@ namespace Aggregator.Domain
                     var coverageReports = _coverageReportsSerializer.CoverageReportFromJson(fileContent);
                     var pageUrl = coverageReports.First().Url;
                     var pageCoverageReports = coverageReports.Select(x =>
-                        new PageResourceCoverageReport(fileName, pageUrl, x.Url, x.Ranges, x.Text.GetSha256Hash()));
+                        new PageResourceCoverageReport(fileName, pageUrl, x.Url, x.Ranges, x.Text.GetSha256Hash(), string.IsNullOrEmpty(x.Text)));
                     _logger.Info($"File {fileName} parsed successfully");
                     return pageCoverageReports;
                 }
@@ -154,21 +154,33 @@ namespace Aggregator.Domain
                 .ConfigureAwait(false);
         }
 
-        private void ShowValidationErrorsForResourcesWithDifferentContent(
-            IGrouping<Uri, PageResourceCoverageReport>[] resourcesWithDifferentContent)
+        private async Task ReportValidationErrorsForResourcesWithDifferentContent(
+            IGrouping<Uri, PageResourceCoverageReport>[] resourcesWithDifferentContent, string outputFolder, CancellationToken cancellationToken = default)
         {
+            var lines = new string[]
+            {
+                "Resource excluded from aggregation:"
+            }; 
+            lines = lines.Concat(resourcesWithDifferentContent.Select(x => $" {x.Key}")).ToArray();
+
             foreach (var resourceCoverageReports in resourcesWithDifferentContent)
             {
-                var lines = new[]
+                lines = lines.Concat(new[]
                 {
                     $"Can't aggregate coverage reports of {resourceCoverageReports.Key}. The resource content is different and won't be aggregated."
-                };
+                }).ToArray();
                 lines = lines.Concat(resourceCoverageReports.GroupBy(x => x.ContentHash)
                         .Select(group =>
-                            $"  Hash = {group.Key} for pages:\r\n{group.Select(x => $"    {x.PageUrl}").AggregateLinesToString()}"))
+                            $"  {(group.First().IsContentEmpty ? "Content is empty, " : "")}Hash = {group.Key} for file - pages:\r\n{group.Select(x => $"    {x.FileName.GetAfterLast(Path.DirectorySeparatorChar)} - {x.PageUrl}").AggregateLinesToString()}"))
                     .ToArray();
-                _logger.Warn(lines.AggregateLinesToString());
+
             }
+
+            var content = lines.AggregateLinesToString();
+            _logger.Warn(content);
+
+            await _fileSystem.WriteTextToFileAsync(Path.Combine(outputFolder, "excluded.txt"), content, cancellationToken)
+                .ConfigureAwait(false);
         }
 
         private async Task<CoverageStats[]> WriteCoveredFiles(string outputFolder,
