@@ -4,13 +4,16 @@ namespace Aggregator.Contracts
 {
     public class ResourceCoverageReport
     {
-        public ResourceCoverageReport(Uri url, Range[] ranges)
+        public ResourceCoverageReport(Uri resourceUrl, string fileName, Range[] ranges)
         {
-            Url = url;
+            ResourceUrl = resourceUrl;
+            FileName = fileName;
             Ranges = ranges;
         }
 
-        public Uri Url { get; }
+        public string FileName { get; }
+        public Uri ResourceUrl { get; }
+        public string FilenameOfNonEmptyContent { get; }
         public Range[] Ranges { get; }
     }
 }

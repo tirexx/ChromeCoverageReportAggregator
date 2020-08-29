@@ -4,7 +4,7 @@ namespace Base.Long
 {
     public static class LongUtils
     {
-        private static readonly string[] SizeSuffixes = {"bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
+        private static readonly string[] SizeSuffixes = {"B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
 
         public static string WithSizeSuffix(this long value, int decimalPlaces = 1)
         {
@@ -12,7 +12,7 @@ namespace Base.Long
                 return "-" + WithSizeSuffix(-value);
 
             if (value == 0)
-                return "0.0 bytes";
+                return "0 B";
 
             // mag is 0 for bytes, 1 for KB, 2, for MB, etc.
             var mag = (int)Math.Log(value, 1024);
